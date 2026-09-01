@@ -1,0 +1,1390 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sampras TW 財務數據分析儀表板</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    .card-loop-move,
+    .card-loop-enter-active,
+    .card-loop-leave-active {
+      transition: all 0.35s ease;
+    }
+    .card-loop-enter-from,
+    .card-loop-leave-to {
+      opacity: 0;
+      transform: scale(0.95);
+    }
+    .no-scrollbar::-webkit-scrollbar {
+      display: none;
+    }
+    .no-scrollbar {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased min-h-screen p-4 md:p-8">
+  <div id="app" class="max-w-7xl mx-auto space-y-5">
+    
+    <!-- 密碼保護遮罩 (未解鎖時顯示) -->
+    <div v-if="!isUnlocked" class="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4">
+      <div class="bg-white rounded-2xl shadow-2xl p-6 md:p-8 w-full max-w-md space-y-6 border border-slate-100">
+        <div class="text-center space-y-2">
+          <div class="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center mx-auto text-xl shadow-inner">
+            <i class="fa-solid fa-lock"></i>
+          </div>
+          <h2 class="text-xl font-bold text-slate-900">Sampras TW 財務儀表板</h2>
+          <p class="text-xs text-slate-500">請輸入存取密碼以解鎖檢視財務數據</p>
+        </div>
+
+        <form @submit.prevent="verifyPassword" class="space-y-4">
+          <div>
+            <input 
+              v-model="inputPassword" 
+              type="password" 
+              placeholder="請輸入密碼..." 
+              class="w-full px-4 py-3 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 text-center tracking-widest font-mono"
+              autofocus
+            />
+            <p v-if="passwordError" class="text-rose-600 text-xs text-center mt-2 font-medium animate-bounce">
+              <i class="fa-solid fa-triangle-exclamation mr-1"></i> 密碼錯誤，請重新輸入
+            </p>
+          </div>
+
+          <button 
+            type="submit" 
+            class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-sm shadow-md transition active:scale-95 flex items-center justify-center gap-2">
+            <i class="fa-solid fa-key"></i> 解鎖儀表板
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 頂部狀態列 -->
+    <header class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-200">
+      <div>
+        <h1 class="text-2xl font-bold text-slate-900 flex items-center gap-2">
+          <i class="fa-solid fa-chart-pie text-emerald-600"></i>
+          Sampras TW 財務分析儀表板
+        </h1>
+        <p class="text-xs md:text-sm text-slate-500 mt-1">
+          最後更新：<span class="font-mono font-medium text-slate-700">{{ lastUpdated || '載入中...' }}</span>
+          <span class="ml-2 inline-flex items-center text-emerald-600 text-xs bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse mr-1.5"></span> 即時同步
+          </span>
+          <span v-if="activeSheetKey === 'all'" class="ml-2 inline-flex items-center text-emerald-700 text-xs bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+            <i class="fa-solid fa-check-double mr-1"></i> 已鎖定支出欄（徹底杜絕銀行結餘與收入干擾）
+          </span>
+        </p>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <button @click="fetchData" :disabled="loading" class="px-4 py-2 bg-white border border-slate-300 rounded-lg shadow-sm text-sm font-medium hover:bg-slate-50 active:scale-95 transition flex items-center gap-2">
+          <i class="fa-solid fa-rotate" :class="{'animate-spin': loading}"></i>
+          {{ loading ? '計算中...' : '重新整理' }}
+        </button>
+      </div>
+    </header>
+
+    <!-- 分頁切換 -->
+    <div class="flex border-b border-slate-200 space-x-2">
+      <button 
+        @click="switchTab('all')"
+        :class="activeSheetKey === 'all' ? 'border-emerald-600 text-emerald-700 font-bold bg-white rounded-t-lg shadow-sm' : 'border-transparent text-slate-500 hover:text-slate-700'"
+        class="py-2.5 px-5 border-b-2 text-sm transition flex items-center gap-2">
+        <i class="fa-solid fa-layer-group text-emerald-600"></i>
+        全公司實質支出 (合併去重)
+        <span class="ml-1 px-1.5 py-0.5 text-xs rounded-full bg-emerald-100 text-emerald-800 font-mono">
+          {{ totalCombinedCount }} 筆
+        </span>
+      </button>
+
+      <button 
+        v-for="(sheet, key) in sheetsData" 
+        :key="key"
+        @click="switchTab(key)"
+        :class="activeSheetKey === key ? 'border-emerald-600 text-emerald-700 font-bold bg-white rounded-t-lg shadow-sm' : 'border-transparent text-slate-500 hover:text-slate-700'"
+        class="py-2.5 px-5 border-b-2 text-sm transition flex items-center gap-2">
+        <i class="fa-regular fa-folder"></i>
+        {{ sheet.name || (key === 'sheet1' ? '收支明細' : '零用現金') }}
+        <span class="ml-1 px-1.5 py-0.5 text-xs rounded-full bg-slate-100 text-slate-600 font-mono">
+          {{ sheet.rows ? sheet.rows.length : 0 }} 筆
+        </span>
+      </button>
+    </div>
+
+    <!-- 年 / 月 時間維度篩選器 -->
+    <div class="bg-white p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-3">
+      <div class="flex flex-wrap items-center gap-2 w-full md:w-auto">
+        <span class="text-xs font-bold text-slate-600 flex items-center gap-1.5 mr-1">
+          <i class="fa-regular fa-calendar-days text-emerald-600"></i> 年度篩選：
+        </span>
+        <button 
+          @click="selectedYear = 'ALL'; selectedMonth = 'ALL';" 
+          :class="selectedYear === 'ALL' ? 'bg-slate-800 text-white font-semibold' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+          class="px-3 py-1.5 text-xs rounded-lg transition">
+          全部年份
+        </button>
+        <button 
+          v-for="yr in availableYears" 
+          :key="yr"
+          @click="selectedYear = yr; selectedMonth = 'ALL';" 
+          :class="selectedYear === yr ? 'bg-emerald-600 text-white font-semibold' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+          class="px-3 py-1.5 text-xs rounded-lg transition font-mono">
+          {{ yr }} 年
+        </button>
+      </div>
+
+      <div class="flex items-center gap-2 w-full md:w-auto justify-end">
+        <label class="text-xs font-bold text-slate-600 whitespace-nowrap">指定月份：</label>
+        <select 
+          v-model="selectedMonth" 
+          class="px-3 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500">
+          <option value="ALL">全年 / 全部月份</option>
+          <option v-for="m in availableMonths" :key="m" :value="m">{{ m }}</option>
+        </select>
+        <button 
+          v-if="selectedMonth !== 'ALL'" 
+          @click="selectedMonth = 'ALL'"
+          class="text-xs text-rose-600 hover:underline ml-1">
+          清除月份
+        </button>
+      </div>
+    </div>
+
+    <!-- KPI 核心統計卡片 -->
+    <div class="relative py-1">
+      <button 
+        @click="rotateCards('left')" 
+        class="absolute -left-3.5 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-white border border-slate-300 shadow-md text-slate-600 hover:text-emerald-600 hover:bg-slate-50 flex items-center justify-center transition active:scale-90"
+        title="向左輪播">
+        <i class="fa-solid fa-chevron-left text-xs"></i>
+      </button>
+
+      <transition-group 
+        name="card-loop" 
+        tag="div" 
+        class="flex items-stretch gap-3 overflow-hidden px-1">
+        
+        <div 
+          v-for="card in kpiCardsList" 
+          :key="card.id"
+          @click="setCategory(card.categoryKey)"
+          :class="[
+            filterCategory === card.categoryKey ? `ring-2 ring-${card.theme}-500 bg-${card.theme}-50/30 shadow-md transform -translate-y-0.5` : `hover:border-${card.theme}-300`,
+            'min-w-[165px] flex-1 bg-white p-3 rounded-xl border border-slate-200 shadow-sm cursor-pointer transition flex flex-col justify-between select-none'
+          ]">
+          <div class="flex items-center justify-between text-xs font-medium" :class="`text-${card.theme}-600`">
+            <span>{{ card.title }}</span>
+            <i :class="card.icon"></i>
+          </div>
+          <div class="text-base font-bold text-slate-900 mt-1">
+            NT$ {{ Math.round(card.amount).toLocaleString() }}
+          </div>
+          <div class="text-[11px] text-slate-400 mt-0.5 truncate">
+            {{ card.desc }}
+          </div>
+        </div>
+
+      </transition-group>
+
+      <button 
+        @click="rotateCards('right')" 
+        class="absolute -right-3.5 top-1/2 -translate-y-1/2 z-20 w-8 h-8 rounded-full bg-white border border-slate-300 shadow-md text-slate-600 hover:text-emerald-600 hover:bg-slate-50 flex items-center justify-center transition active:scale-90"
+        title="向右輪播">
+        <i class="fa-solid fa-chevron-right text-xs"></i>
+      </button>
+    </div>
+
+    <!-- 員工薪資人事專屬細分區 -->
+    <div v-if="filterCategory === '薪資'" class="bg-white p-3 rounded-xl border border-rose-200 shadow-sm space-y-2">
+      <div class="flex items-center justify-between pb-1.5 border-b border-rose-100 text-xs font-bold text-rose-900">
+        <div class="flex items-center gap-2">
+          <i class="fa-solid fa-users text-rose-600"></i>
+          <span>實質薪資細分 (含本薪、兼職勞務報酬、勞健保)</span>
+          <button 
+            @click="salarySortOrder = salarySortOrder === 'desc' ? 'asc' : 'desc'"
+            class="px-2 py-0.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded border border-rose-200 text-[11px] flex items-center gap-1 font-normal">
+            <i class="fa-solid" :class="salarySortOrder === 'desc' ? 'fa-arrow-down-wide-short' : 'fa-arrow-up-short-wide'"></i>
+            {{ salarySortOrder === 'desc' ? '金額：由大到小' : '金額：由小到大' }}
+          </button>
+        </div>
+        <div class="text-rose-700 font-mono">
+          實質人事總計：NT$ {{ Math.round(stats.categories['員工薪資人事'] || 0).toLocaleString() }}
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+        <button 
+          @click="selectedSalaryPerson = 'ALL'"
+          :class="selectedSalaryPerson === 'ALL' ? 'bg-rose-700 text-white font-semibold shadow-sm' : 'bg-rose-50/80 text-rose-700 hover:bg-rose-100 border border-rose-200/60'"
+          class="px-2.5 py-1.5 rounded-lg text-xs transition flex items-center justify-between">
+          <span>全部薪資發放</span>
+          <span class="font-mono text-[11px] font-bold">${{ Math.round(stats.categories['員工薪資人事'] || 0).toLocaleString() }}</span>
+        </button>
+
+        <button 
+          v-for="item in sortedSalaryList" 
+          :key="item.name"
+          @click="selectedSalaryPerson = selectedSalaryPerson === item.name ? 'ALL' : item.name"
+          :class="selectedSalaryPerson === item.name ? 'bg-rose-700 text-white font-semibold shadow-sm' : 'bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200/80'"
+          class="px-2.5 py-1.5 rounded-lg text-xs transition flex items-center justify-between">
+          <span class="truncate">{{ item.name }}</span>
+          <span class="font-mono text-[11px] font-medium ml-1 flex-shrink-0">${{ Math.round(item.amount).toLocaleString() }}</span>
+        </button>
+
+        <button 
+          v-for="item in fixedBottomSalaryList" 
+          :key="item.name"
+          @click="selectedSalaryPerson = selectedSalaryPerson === item.name ? 'ALL' : item.name"
+          :class="selectedSalaryPerson === item.name ? 'bg-rose-700 text-white font-semibold shadow-sm' : 'bg-amber-50/70 text-amber-900 hover:bg-amber-100 border border-amber-200/80'"
+          class="px-2.5 py-1.5 rounded-lg text-xs transition flex items-center justify-between">
+          <span class="truncate flex items-center gap-1">
+            <i class="fa-solid fa-shield-halved text-amber-600 text-[10px]"></i>
+            {{ item.name }}
+          </span>
+          <span class="font-mono text-[11px] font-medium ml-1 flex-shrink-0">${{ Math.round(item.amount).toLocaleString() }}</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- AI / SaaS 工具專屬細分區 -->
+    <div v-if="filterCategory === 'AI'" class="bg-white p-3 rounded-xl border border-violet-200 shadow-sm space-y-2">
+      <div class="flex items-center justify-between pb-1.5 border-b border-violet-100 text-xs font-bold text-violet-900">
+        <div class="flex items-center gap-2">
+          <i class="fa-solid fa-layer-group text-violet-600"></i>
+          <span>SaaS 各工具細分 (含 Foxit, 104, OpenAI等)</span>
+          <button 
+            @click="saasSortOrder = saasSortOrder === 'desc' ? 'asc' : 'desc'"
+            class="px-2 py-0.5 bg-violet-50 text-violet-700 hover:bg-violet-100 rounded border border-violet-200 text-[11px] flex items-center gap-1 font-normal">
+            <i class="fa-solid" :class="saasSortOrder === 'desc' ? 'fa-arrow-down-wide-short' : 'fa-arrow-up-short-wide'"></i>
+            {{ saasSortOrder === 'desc' ? '金額：由大到小' : '金額：由小到大' }}
+          </button>
+        </div>
+        <div class="text-violet-700 font-mono">
+          全部 SaaS 總計：NT$ {{ Math.round(stats.categories['AI / SaaS'] || 0).toLocaleString() }}
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
+        <button 
+          @click="selectedSaasTool = 'ALL'"
+          :class="selectedSaasTool === 'ALL' ? 'bg-violet-700 text-white font-semibold shadow-sm' : 'bg-violet-50/80 text-violet-700 hover:bg-violet-100 border border-violet-200/60'"
+          class="px-2.5 py-1.5 rounded-lg text-xs transition flex items-center justify-between">
+          <span>全部工具</span>
+          <span class="font-mono text-[11px] font-bold">${{ Math.round(stats.categories['AI / SaaS'] || 0).toLocaleString() }}</span>
+        </button>
+
+        <button 
+          v-for="item in sortedSaasList" 
+          :key="item.name"
+          @click="selectedSaasTool = selectedSaasTool === item.name ? 'ALL' : item.name"
+          :class="selectedSaasTool === item.name ? 'bg-violet-700 text-white font-semibold shadow-sm' : 'bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200/80'"
+          class="px-2.5 py-1.5 rounded-lg text-xs transition flex items-center justify-between">
+          <span class="flex items-center gap-1.5 truncate">
+            <span class="w-1.5 h-1.5 rounded-full flex-shrink-0" :style="{ backgroundColor: getToolColor(item.name) }"></span>
+            <span class="truncate">{{ item.name }}</span>
+          </span>
+          <span class="font-mono text-[11px] font-medium ml-1 flex-shrink-0">${{ Math.round(item.amount).toLocaleString() }}</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- 視覺化圖表區 -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm md:col-span-1">
+        <h3 class="text-sm font-bold text-slate-700 mb-2 flex items-center justify-between">
+          <span class="flex items-center gap-2"><i class="fa-solid fa-chart-pie text-slate-400"></i> 開支結構分佈</span>
+          <span class="text-xs font-mono text-emerald-600 font-medium bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+            {{ activeCategoryLabel }}
+          </span>
+        </h3>
+        <p class="text-[11px] text-slate-400 mb-2">💡 點擊圓餅區塊可過濾下方明細</p>
+        <div class="relative h-60 cursor-pointer">
+          <canvas id="categoryChart"></canvas>
+        </div>
+      </div>
+
+      <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm md:col-span-2">
+        <h3 class="text-sm font-bold text-slate-700 mb-4 flex items-center justify-between">
+          <span class="flex items-center gap-2"><i class="fa-solid fa-chart-column text-slate-400"></i> 支出趨勢走勢 (NT$)</span>
+          <span class="text-xs font-mono text-emerald-600 font-medium bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+            {{ selectedMonth !== 'ALL' ? selectedMonth + ' 鎖定' : activeCategoryLabel }}
+          </span>
+        </h3>
+        <p class="text-[11px] text-slate-400 mb-2">💡 點擊月份長條可直接鎖定該月份明細</p>
+        <div class="relative h-60 cursor-pointer">
+          <canvas id="timelineChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- 搜尋與過濾列 -->
+    <div class="flex flex-col sm:flex-row gap-4 justify-between items-center bg-white p-4 rounded-xl border border-slate-200">
+      <div class="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+        <span class="text-xs font-bold text-slate-500">快速篩選：</span>
+        <button 
+          @click="setCategory('ALL')" 
+          :class="filterCategory === 'ALL' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+          class="px-3 py-1 text-xs rounded-lg transition font-medium">全部</button>
+        <button 
+          v-for="cat in ['薪資', '租金', '勞務', 'AI', '福利', '稅項', '硬體', '差旅', '其他']" 
+          :key="cat"
+          @click="setCategory(cat)" 
+          :class="filterCategory === cat ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
+          class="px-3 py-1 text-xs rounded-lg transition font-medium">
+          {{ cat }}
+        </button>
+      </div>
+
+      <div class="relative w-full sm:w-80">
+        <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+        <input 
+          v-model="searchQuery" 
+          type="text" 
+          placeholder="搜尋 燦坤, 辦公椅, OpenAI, 搬家..." 
+          class="w-full pl-9 pr-4 py-1.5 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+        />
+      </div>
+    </div>
+
+    <!-- 資料明細表格 -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+      <div class="p-3 bg-slate-50/60 border-b border-slate-200 flex justify-between items-center text-xs text-slate-500 font-medium">
+        <div>
+          目前過濾條件：
+          <span class="font-bold text-slate-800">{{ activeCategoryLabel }}</span>
+          <span v-if="selectedMonth !== 'ALL'" class="ml-2 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono">
+            {{ selectedMonth }}
+          </span>
+        </div>
+        <div>
+          共顯示 <span class="font-bold text-slate-800 font-mono">{{ filteredRows.length }}</span> 筆明細
+        </div>
+      </div>
+
+      <div class="overflow-x-auto max-h-[600px]">
+        <table class="w-full text-left text-sm border-collapse">
+          <thead class="bg-slate-100 text-slate-700 font-semibold sticky top-0 border-b border-slate-200 z-10 shadow-sm">
+            <tr>
+              <th v-if="activeSheetKey === 'all'" class="px-4 py-3 whitespace-nowrap text-slate-500">來源</th>
+              <th class="px-4 py-3 whitespace-nowrap text-emerald-700">歸屬類別</th>
+              <th class="px-4 py-3 whitespace-nowrap text-rose-700">細分子項</th>
+              <th class="px-4 py-3 whitespace-nowrap text-right text-rose-600">支出金額 (NT$)</th>
+              <th class="px-4 py-3 whitespace-nowrap text-slate-500">歸屬月份</th>
+              <th v-for="(col, index) in activeHeaders" :key="index" class="px-4 py-3 whitespace-nowrap">
+                {{ col || `欄位 ${index+1}` }}
+              </th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100 font-sans text-xs md:text-sm">
+            <tr v-if="filteredRows.length === 0">
+              <td :colspan="activeHeaders.length + 5" class="text-center py-12 text-slate-400">
+                無相符資料記錄
+              </td>
+            </tr>
+            <tr v-for="(item, rIdx) in filteredRows" :key="rIdx" class="hover:bg-emerald-50/40 transition">
+              <td v-if="activeSheetKey === 'all'" class="px-4 py-2.5 whitespace-nowrap font-mono text-xs text-slate-400">
+                <span :class="item._source === 'sheet1' ? 'bg-blue-50 text-blue-600' : 'bg-amber-50 text-amber-600'" class="px-1.5 py-0.5 rounded border border-current">
+                  {{ item._sourceName }}
+                </span>
+              </td>
+              <td class="px-4 py-2.5 whitespace-nowrap font-medium text-emerald-700">
+                {{ item._detectedCategory }}
+              </td>
+              <td class="px-4 py-2.5 whitespace-nowrap font-mono text-xs">
+                <span v-if="item._detectedPerson !== '-'" class="px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 font-semibold border border-rose-200">
+                  {{ item._detectedPerson }}
+                </span>
+                <span v-else-if="item._detectedTool !== '-'" class="px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 font-semibold border border-violet-200">
+                  {{ item._detectedTool }}
+                </span>
+                <span v-else class="text-slate-300">-</span>
+              </td>
+              <td class="px-4 py-2.5 whitespace-nowrap font-mono font-bold text-right text-slate-900">
+                {{ item._amount > 0 ? '$' + Math.round(item._amount).toLocaleString() : '-' }}
+              </td>
+              <td class="px-4 py-2.5 whitespace-nowrap font-mono text-slate-500">
+                {{ item._month }}
+              </td>
+              <td v-for="(cell, cIdx) in item.row" :key="cIdx" class="px-4 py-2.5 whitespace-nowrap text-slate-700">
+                {{ formatCell(cell) }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const { createApp, ref, computed, watch, onMounted, nextTick } = Vue;
+
+    createApp({
+      setup() {
+        const apiUrl = 'https://script.google.com/macros/s/AKfycbz6m21NZukoDLsEKQqxtU2XBrSnEWg69JnrTvq-dvDMAHOxcHk2ddnByo_PLkZHMzLx/exec?token=Sampras@0424';
+        
+        // 密碼保護機制狀態
+        const isUnlocked = ref(sessionStorage.getItem('sampras_dashboard_unlocked') === 'true');
+        const inputPassword = ref('');
+        const passwordError = ref(false);
+
+        const verifyPassword = () => {
+          if (inputPassword.value === 'Sampras@0424') {
+            isUnlocked.value = true;
+            passwordError.value = false;
+            sessionStorage.setItem('sampras_dashboard_unlocked', 'true');
+            fetchData(); // 解鎖後立刻載入數據
+          } else {
+            passwordError.value = true;
+            inputPassword.value = '';
+          }
+        };
+
+        const activeSheetKey = ref('all');
+        const sheetsData = ref({});
+        const loading = ref(false);
+        const searchQuery = ref('');
+        const filterCategory = ref('ALL');
+        const selectedSaasTool = ref('ALL');
+        const selectedSalaryPerson = ref('ALL');
+        const selectedYear = ref('ALL');
+        const selectedMonth = ref('ALL');
+        const lastUpdated = ref('');
+        
+        const salarySortOrder = ref('desc');
+        const saasSortOrder = ref('desc');
+        
+        let categoryChartInstance = null;
+        let timelineChartInstance = null;
+
+        const stats = ref({
+          total: 0,
+          categories: {}
+        });
+
+        const saasStats = ref({});
+        const salaryStats = ref({});
+
+        const cardOrder = ref(['total', 'salary', 'rent', 'outsourcing', 'saas', 'welfare', 'tax', 'hardware', 'travel', 'other']);
+
+        const rotateCards = (direction) => {
+          if (direction === 'right') {
+            const first = cardOrder.value.shift();
+            cardOrder.value.push(first);
+          } else {
+            const last = cardOrder.value.pop();
+            cardOrder.value.unshift(last);
+          }
+        };
+
+        const kpiCardsList = computed(() => {
+          const cardsMap = {
+            'total': {
+              id: 'total',
+              categoryKey: 'ALL',
+              theme: 'slate',
+              title: '全部支出 (去重)',
+              amount: stats.value.total,
+              desc: `${timeFilteredRows.value.length} 筆 (點擊重設)`,
+              icon: 'fa-solid fa-calculator'
+            },
+            'salary': {
+              id: 'salary',
+              categoryKey: '薪資',
+              theme: 'rose',
+              title: '員工薪資/人事',
+              amount: stats.value.categories['員工薪資人事'] || 0,
+              desc: '薪酬、勞健保 👉',
+              icon: 'fa-solid fa-user-group'
+            },
+            'rent': {
+              id: 'rent',
+              categoryKey: '租金',
+              theme: 'amber',
+              title: '租金/水電/網絡',
+              amount: stats.value.categories['租金與水電'] || 0,
+              desc: '瑋勝思博客、中華電信',
+              icon: 'fa-solid fa-building'
+            },
+            'outsourcing': {
+              id: 'outsourcing',
+              categoryKey: '勞務',
+              theme: 'cyan',
+              title: '外包勞務/HR會計',
+              amount: stats.value.categories['外包勞務費'] || 0,
+              desc: '蘊揚會計、佳澤顧問',
+              icon: 'fa-solid fa-briefcase'
+            },
+            'saas': {
+              id: 'saas',
+              categoryKey: 'AI',
+              theme: 'violet',
+              title: 'AI / SaaS 工具',
+              amount: stats.value.categories['AI / SaaS'] || 0,
+              desc: 'OpenAI、Foxit 👉',
+              icon: 'fa-solid fa-robot'
+            },
+            'welfare': {
+              id: 'welfare',
+              categoryKey: '福利',
+              theme: 'emerald',
+              title: '職工福利 / 聚餐',
+              amount: stats.value.categories['職工福利'] || 0,
+              desc: '老新台菜、幕和宴等',
+              icon: 'fa-solid fa-utensils'
+            },
+            'tax': {
+              id: 'tax',
+              categoryKey: '稅項',
+              theme: 'teal',
+              title: '政府稅項',
+              amount: stats.value.categories['政府稅項'] || 0,
+              desc: '營業稅、國稅局申報',
+              icon: 'fa-solid fa-receipt'
+            },
+            'hardware': {
+              id: 'hardware',
+              categoryKey: '硬體',
+              theme: 'blue',
+              title: '硬體設備 / 用具',
+              amount: stats.value.categories['硬體設備'] || 0,
+              desc: '辦公椅、搬家、Mac',
+              icon: 'fa-solid fa-laptop'
+            },
+            'travel': {
+              id: 'travel',
+              categoryKey: '差旅',
+              theme: 'indigo',
+              title: '差旅 / 交通 (Sheet 3)',
+              amount: stats.value.categories['差旅交通'] || 0,
+              desc: 'Uber, 台鐵, 住宿細項',
+              icon: 'fa-solid fa-plane'
+            },
+            'other': {
+              id: 'other',
+              categoryKey: '其他',
+              theme: 'slate',
+              title: '其他雜項支出',
+              amount: stats.value.categories['其他雜項'] || 0,
+              desc: '文具、印章、手續費',
+              icon: 'fa-solid fa-ellipsis'
+            }
+          };
+
+          return cardOrder.value.map(key => cardsMap[key]);
+        });
+
+        const identifySaasTool = (cust, catCol, summary, remark) => {
+          const fullText = `${cust} ${catCol} ${summary} ${remark}`.toLowerCase().replace(/\s+/g, '');
+
+          if (fullText.includes('foxit') || fullText.includes('pdfeditor') || fullText.includes('pdf editor')) return 'Foxit PDF Editor';
+          if (fullText.includes('一零四') || fullText.includes('104') || fullText.includes('打卡系統')) return '104 系統/招聘';
+          if (fullText.includes('figma')) return 'Figma';
+          if (fullText.includes('adobe') || fullText.includes('photoshop') || fullText.includes('creativecloud')) return 'Adobe CC';
+          if (fullText.includes('openai') || fullText.includes('chatgpt')) return 'OpenAI / ChatGPT';
+          if (fullText.includes('cursor')) return 'Cursor AI';
+          if (fullText.includes('anthropic') || fullText.includes('claude')) return 'Anthropic (Claude)';
+          if (fullText.includes('msoffice') || fullText.includes('office365') || fullText.includes('office2021')) return 'Microsoft 365';
+          if (fullText.includes('workspace') || fullText.includes('googleworkspace')) return 'Google Workspace';
+          if (fullText.includes('anomaly') || fullText.includes('opencode')) return 'Anomaly (Opencode)';
+          if (fullText.includes('aicost') || fullText.includes('ai cost')) return 'AI Cost (綜合)';
+          if (fullText.includes('github')) return 'GitHub';
+
+          return '-';
+        };
+
+        const identifyPerson = (cust, catCol, summary, remark) => {
+          const fullText = `${cust} ${catCol} ${summary} ${remark}`.toLowerCase().replace(/\s+/g, '');
+
+          if (
+            fullText.includes('服務收入') || fullText.includes('請款單') || fullText.includes('請款收入') || 
+            fullText.includes('富億') || fullText.includes('蘊揚') || fullText.includes('佳澤') ||
+            fullText.includes('aicost') || fullText.includes('ai cost') || fullText.includes('燦坤') ||
+            fullText.includes('foxit') || fullText.includes('老新台菜') || fullText.includes('幕和宴') || 
+            fullText.includes('永心浮島') || fullText.includes('新村畜產')
+          ) {
+            return '-';
+          }
+
+          if (
+            fullText.includes('借資') || fullText.includes('借款') || fullText.includes('歸還') || 
+            fullText.includes('還款') || fullText.includes('股東') || fullText.includes('借貸') || 
+            fullText.includes('往來款') || fullText.includes('調撥') || fullText.includes('換匯') ||
+            fullText.includes('港台墊支') || fullText.includes('出差費用') || fullText.includes('交通費') || fullText.includes('uber') ||
+            (fullText.includes('墊支') && !fullText.includes('薪酬') && !fullText.includes('薪資'))
+          ) {
+            return '-';
+          }
+
+          if (fullText.includes('李豫豪')) return '李豫豪 (面試/兼職)';
+
+          if (fullText.includes('昭元科技') || fullText.includes('小妞妞') || fullText.includes('王之邑') || fullText.includes('james')) return 'James (王之邑)';
+          if (fullText.includes('顏文滔') || fullText.includes('terry')) return 'Terry (顏文滔)';
+          if (fullText.includes('陳冠樺') || fullText.includes('evan')) return 'Evan (陳冠樺)';
+          if (fullText.includes('黃姵穎') || fullText.includes('盧妘銨') || fullText.includes('penny')) return 'Penny (黃姵穎)';
+          if (fullText.includes('尤品淇') || fullText.includes('kama')) return 'Kama (尤品淇)';
+          if (fullText.includes('宋承鴻') || fullText.includes('chang')) return 'Chang (宋承鴻)';
+          if (fullText.includes('蔡宗正') || fullText.includes('zorn')) return 'Zorn (蔡宗正)';
+          if (fullText.includes('李仰脩') || fullText.includes('alex')) return 'Alex (李仰脩)';
+          if (fullText.includes('施美秀') || fullText.includes('mei') || fullText.includes('妹')) return 'Mei (施美秀)';
+          if (fullText.includes('歐舜玄') || fullText.includes('ocean')) return 'Ocean (歐舜玄)';
+          if (fullText.includes('周品均') || fullText.includes('kevin')) return 'Kevin (周品均)';
+          if (fullText.includes('謝蟬伊') || fullText.includes('chaya')) return 'Chaya (謝蟬伊)';
+          if (fullText.includes('張書生') || fullText.includes('book')) return 'Book (張書生)';
+          
+          if (fullText.includes('勞保') || fullText.includes('勞退') || fullText.includes('勞工保險')) return '法定勞保/勞退';
+          if (fullText.includes('健保') || fullText.includes('健康保險')) return '法定健保費';
+          if (fullText.includes('扣繳') || fullText.includes('各類所得') || fullText.includes('代扣')) return '薪資扣繳稅款';
+
+          return '其他薪資人事';
+        };
+
+        const identifyCategory = (cust, catCol, summary, remark) => {
+          const c = String(cust || '').toLowerCase().replace(/\s+/g, '');
+          const cat = String(catCol || '').toLowerCase().replace(/\s+/g, '');
+          const s = String(summary || '').toLowerCase().replace(/\s+/g, '');
+          const r = String(remark || '').toLowerCase().replace(/\s+/g, '');
+          const full = `${c} ${cat} ${s} ${r}`;
+
+          if (
+            full.includes('服務收入') || full.includes('請款單') || full.includes('請款收入') || full.includes('samprashk請款') ||
+            full.includes('請款') || full.includes('兌台幣') || full.includes('兌港幣') || full.includes('結存') ||
+            full.includes('借資') || full.includes('借款') || full.includes('歸還') || full.includes('還款') || full.includes('股東') || full.includes('往來款') || full.includes('暫借款') ||
+            full.includes('換匯') || full.includes('結匯') || full.includes('調撥') || full.includes('定存') || full.includes('內部轉帳') ||
+            full.includes('開戶現金存入') || full.includes('總計') || full.includes('合計') || full.includes('total') || full.includes('sum')
+          ) {
+            return '非營運支出(已排除)';
+          }
+
+          if (
+            full.includes('foxit') || full.includes('pdfeditor') || full.includes('pdf editor') ||
+            full.includes('一零四') || full.includes('104') ||
+            full.includes('打卡系統') || full.includes('招聘平台') || full.includes('aicost') || full.includes('ai cost') ||
+            full.includes('openai') || full.includes('chatgpt') || full.includes('anthropic') || full.includes('claude') ||
+            full.includes('cursor') || full.includes('figma') || full.includes('adobe') || full.includes('msoffice') ||
+            full.includes('office365') || full.includes('workspace') || full.includes('anomaly') || full.includes('opencode') || full.includes('github')
+          ) {
+            return 'AI / SaaS';
+          }
+
+          if (
+            full.includes('出差費用') || full.includes('出差') || full.includes('交通及膳雜費') ||
+            full.includes('旅平不便險') || full.includes('旅平險') || full.includes('uber') ||
+            full.includes('車票') || full.includes('車資') || full.includes('機票') ||
+            full.includes('台鐵') || full.includes('高鐵') || full.includes('住宿') ||
+            full.includes('飯店') || full.includes('hotel') || full.includes('喜迎') ||
+            full.includes('旅居文旅') || full.includes('hkexpress') || full.includes('agoda') || full.includes('計程車') ||
+            full.includes('交通費')
+          ) {
+            return '差旅交通';
+          }
+
+          if (
+            c.includes('燦坤') || s.includes('燦坤') || c.includes('佑客家具') || s.includes('佑客家具') ||
+            c.includes('邦運搬家') || s.includes('搬家公司') || s.includes('搬運費用') || s.includes('辦公椅') ||
+            c.includes('ikea') || s.includes('ikea') || s.includes('公司擺設') ||
+            c.includes('momo') || s.includes('momo') || s.includes('usb電扇') || s.includes('電扇') || s.includes('喇叭') || s.includes('排插') || s.includes('椅墊') ||
+            full.includes('webcam') || full.includes('web cam') || full.includes('視訊鏡頭') || full.includes('電腦設備') || full.includes('辦公設備') ||
+            full.includes('thinkpad') || full.includes('macbook') || full.includes('筆電') || full.includes('螢幕') || full.includes('升降桌') || full.includes('滑鼠') ||
+            full.includes('耳機') || full.includes('鍵盤') || full.includes('keychron') || full.includes('hub') || full.includes('wifi') || full.includes('router') ||
+            full.includes('pixel') || full.includes('asus') || full.includes('msi') || full.includes('羅技') || full.includes('logitech') || full.includes('延長線') || full.includes('隨身碟') || full.includes('硬碟')
+          ) {
+            return '硬體設備';
+          }
+
+          if (
+            c.includes('老新台菜') || c.includes('幕和宴') || c.includes('永心浮島') || c.includes('新村畜產') ||
+            s.includes('老新台菜') || s.includes('幕和宴') || s.includes('永心浮島') || s.includes('新村畜產') ||
+            cat.includes('福利') || cat.includes('職工福利') || full.includes('迎新') || full.includes('聚餐') ||
+            full.includes('慶生') || full.includes('開年飯') || full.includes('春酒') || full.includes('中秋') ||
+            full.includes('端午') || full.includes('聖誕') || full.includes('零食') || full.includes('飲料') ||
+            full.includes('咖啡豆') || full.includes('宵夜') || full.includes('酒吧') || full.includes('鐵板燒') ||
+            full.includes('火鍋') || full.includes('禮盒') || full.includes('figure') || full.includes('如邑堂') ||
+            full.includes('wacookies') || full.includes('呷百二') || full.includes('e7play') || full.includes('viveland')
+          ) {
+            return '職工福利';
+          }
+
+          if (
+            c.includes('國稅局') || cat.includes('稅') || s.includes('營業稅') || s.includes('營業稅繳款') ||
+            full.includes('北區國稅局') || full.includes('高雄國稅局')
+          ) {
+            return '政府稅項';
+          }
+
+          if (
+            c.includes('富億') || c.includes('蘊揚') || c.includes('佳澤') ||
+            s.includes('富億') || s.includes('蘊揚') || s.includes('佳澤') ||
+            cat.includes('勞務') || full.includes('會計師') || full.includes('記帳') ||
+            full.includes('事務所') || full.includes('審計') || full.includes('顧問費') || full.includes('記帳費')
+          ) {
+            return '外包勞務費';
+          }
+
+          if (
+            c.includes('瑋勝') || c.includes('思博客') || c.includes('中華電信') || c.includes('中華電訊') || c.includes('張美鳳') || c.includes('佳里昂') ||
+            s.includes('瑋勝') || s.includes('思博客') || s.includes('中華電信') || s.includes('中華電訊') || s.includes('張美鳳') || s.includes('佳里昂') ||
+            cat.includes('租金') || cat.includes('水電') || full.includes('網絡費') || full.includes('網路費') ||
+            full.includes('25f') || full.includes('25樓') || full.includes('辦公室租金') || full.includes('月租') ||
+            full.includes('押金') || full.includes('電費') || full.includes('水費') || full.includes('管理費') || full.includes('公證')
+          ) {
+            return '租金與水電';
+          }
+
+          if (
+            c.includes('李豫豪') || s.includes('李豫豪') || full.includes('面試前端') || full.includes('勞務報酬') ||
+            c.includes('勞工保險局') || c.includes('中央健康保險署') || c.includes('勞保局') || c.includes('健保署') ||
+            cat.includes('薪資') || cat.includes('薪酬') || full.includes('本薪') || full.includes('薪酬') ||
+            full.includes('底薪') || full.includes('月薪') || full.includes('薪資') || full.includes('薪水') ||
+            full.includes('薪轉') || full.includes('勞保') || full.includes('健保') || full.includes('勞健保') ||
+            full.includes('代扣') || full.includes('二代健保') || full.includes('勞退') || full.includes('退休金') ||
+            c.includes('昭元科技') || c.includes('小妞妞') || s.includes('昭元科技') || s.includes('小妞妞')
+          ) {
+            return '員工薪資人事';
+          }
+
+          if (
+            c.includes('王之邑') || c.includes('顏文滔') || c.includes('陳冠樺') || c.includes('黃姵穎') ||
+            c.includes('盧妘銨') || c.includes('尤品淇') || c.includes('宋承鴻') || c.includes('蔡宗正') ||
+            c.includes('李仰脩') || c.includes('施美秀') || c.includes('歐舜玄') || c.includes('周品均') ||
+            c.includes('謝蟬伊') || c.includes('張書生') ||
+            s.includes('王之邑') || s.includes('顏文滔') || s.includes('陳冠樺') || s.includes('黃姵穎') ||
+            s.includes('盧妘銨') || s.includes('尤品淇') || s.includes('宋承鴻') || s.includes('蔡宗正') ||
+            s.includes('李仰脩') || s.includes('施美秀') || s.includes('歐舜玄') || s.includes('周品均') ||
+            s.includes('謝蟬伊') || s.includes('張書生') ||
+            full.includes('扣繳') || full.includes('年終') || full.includes('三節') || full.includes('績效') || full.includes('獎金')
+          ) {
+            return '員工薪資人事';
+          }
+
+          return '其他雜項';
+        };
+
+        const parseStrictAmount = (row, headers) => {
+          const h = headers.map(c => String(c).trim());
+          const rowText = row.join(' ').toLowerCase();
+
+          if (rowText.includes('總計') || rowText.includes('合計') || rowText.includes('total') || rowText.includes('sum')) {
+            return 0;
+          }
+          
+          const incIdx = h.findIndex(c => c === '存入' || c === '收入' || c === '收入金額');
+          if (incIdx !== -1 && row[incIdx] !== undefined && row[incIdx] !== null && row[incIdx] !== '') {
+            const rawInc = String(row[incIdx]).replace(/[^0-9.-]+/g, '');
+            const valInc = parseFloat(rawInc);
+            if (!isNaN(valInc) && valInc > 0) return 0;
+          }
+
+          const expIdx = h.findIndex(c => c === '支出' || c === '支出金額');
+          if (expIdx !== -1 && row[expIdx] !== undefined && row[expIdx] !== null && row[expIdx] !== '') {
+            const rawExp = String(row[expIdx]).replace(/[^0-9.-]+/g, '');
+            const valExp = parseFloat(rawExp);
+            if (!isNaN(valExp) && valExp > 0 && valExp < 2000000) return valExp;
+          }
+
+          const amtIdx = h.findIndex(c => c === '金額');
+          if (amtIdx !== -1 && row[amtIdx] !== undefined && row[amtIdx] !== null && row[amtIdx] !== '') {
+            const rawAmt = String(row[amtIdx]).replace(/[^0-9.-]+/g, '');
+            const valAmt = parseFloat(rawAmt);
+            if (!isNaN(valAmt) && valAmt > 0 && valAmt < 2000000) return valAmt;
+          }
+
+          return 0;
+        };
+
+        const parseMonth = (row, headers) => {
+          const h = headers.map(c => String(c).trim());
+          const ymIdx = h.findIndex(c => c === '年月');
+          const dateIdx = h.findIndex(c => c.includes('日期'));
+
+          if (ymIdx !== -1 && row[ymIdx]) {
+            const str = String(row[ymIdx]).trim();
+            const yMatch = str.match(/(202[3-6])/);
+            if (yMatch) {
+              const year = yMatch[1];
+              const monthMap = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
+              for (let [k, v] of Object.entries(monthMap)) {
+                if (str.includes(k)) return `${year}-${v}`;
+              }
+              const numMonthMatch = str.match(/\d{4}[-/年](\d{1,2})/);
+              if (numMonthMatch) return `${year}-${numMonthMatch[1].padStart(2, '0')}`;
+              const compactMatch = str.match(/\d{4}(\d{2})/);
+              if (compactMatch) return `${year}-${compactMatch[1]}`;
+              return `${year}-01`;
+            }
+          }
+
+          if (dateIdx !== -1 && row[dateIdx]) {
+            const val = row[dateIdx];
+            if (typeof val === 'string' && val.includes('T') && val.endsWith('Z')) {
+              const d = new Date(val);
+              if (!isNaN(d.getTime())) {
+                const y = d.getFullYear();
+                const m = String(d.getMonth() + 1).padStart(2, '0');
+                return `${y}-${m}`;
+              }
+            }
+            const dStr = String(val).trim();
+            const dmy = dStr.match(/(\d{1,2})[-/](\d{1,2})[-/](202[3-6])/);
+            if (dmy) return `${dmy[3]}-${dmy[2].padStart(2, '0')}`;
+            const ymd = dStr.match(/(202[3-6])[-/年](\d{1,2})/);
+            if (ymd) return `${ymd[1]}-${ymd[2].padStart(2, '0')}`;
+          }
+
+          return '其他';
+        };
+
+        const activeHeaders = computed(() => {
+          if (activeSheetKey.value === 'all') {
+            return sheetsData.value.sheet1?.headers || sheetsData.value.sheet3?.headers || [];
+          }
+          return sheetsData.value[activeSheetKey.value]?.headers || [];
+        });
+
+        const allProcessedRows = computed(() => {
+          let rowsWithMeta = [];
+
+          if (activeSheetKey.value === 'all') {
+            const list1 = sheetsData.value.sheet1?.rows || [];
+            const h1 = sheetsData.value.sheet1?.headers || [];
+            
+            list1.forEach(r => {
+              if (r.some(c => c !== '' && c !== null)) {
+                const rowText = r.join(' ').toLowerCase().replace(/\s+/g, '');
+                
+                const isExcludedTransfer = (
+                  rowText.includes('墊支') || rowText.includes('代墊') || 
+                  rowText.includes('墊款') || rowText.includes('取回') || 
+                  rowText.includes('零用金') || rowText.includes('零用現金') || 
+                  rowText.includes('撥補') || rowText.includes('預備金') ||
+                  rowText.includes('借資') || rowText.includes('借款') ||
+                  rowText.includes('歸還') || rowText.includes('還款') ||
+                  rowText.includes('股東') || rowText.includes('換匯') ||
+                  rowText.includes('調撥') || rowText.includes('定存') ||
+                  rowText.includes('服務收入') || rowText.includes('請款單') ||
+                  rowText.includes('請款收入') || rowText.includes('samprashk請款') ||
+                  rowText.includes('總計') || rowText.includes('合計')
+                );
+
+                if (!isExcludedTransfer) {
+                  rowsWithMeta.push({ 
+                    row: r, 
+                    headers: h1, 
+                    _source: 'sheet1', 
+                    _sourceName: sheetsData.value.sheet1?.name || '收支明細' 
+                  });
+                }
+              }
+            });
+
+            const list3 = sheetsData.value.sheet3?.rows || [];
+            const h3 = sheetsData.value.sheet3?.headers || [];
+            list3.forEach(r => {
+              if (r.some(c => c !== '' && c !== null)) {
+                const rowText = r.join(' ').toLowerCase();
+                const isSummaryRow = rowText.includes('總計') || rowText.includes('合計') || rowText.includes('total') || rowText.includes('sum');
+                if (!isSummaryRow) {
+                  rowsWithMeta.push({ 
+                    row: r, 
+                    headers: h3, 
+                    _source: 'sheet3', 
+                    _sourceName: sheetsData.value.sheet3?.name || '零用金明細' 
+                  });
+                }
+              }
+            });
+          } else {
+            const list = sheetsData.value[activeSheetKey.value]?.rows || [];
+            const h = sheetsData.value[activeSheetKey.value]?.headers || [];
+            list.forEach(r => {
+              if (r.some(c => c !== '' && c !== null)) {
+                const rowText = r.join(' ').toLowerCase();
+                const isSummaryRow = rowText.includes('總計') || rowText.includes('合計') || rowText.includes('total') || rowText.includes('sum');
+                if (!isSummaryRow) {
+                  rowsWithMeta.push({ 
+                    row: r, 
+                    headers: h, 
+                    _source: activeSheetKey.value, 
+                    _sourceName: sheetsData.value[activeSheetKey.value]?.name 
+                  });
+                }
+              }
+            });
+          }
+
+          return rowsWithMeta
+            .map(item => {
+              const h = item.headers.map(c => String(c).trim());
+              
+              const custIdx = h.findIndex(c => c === '客戶' || c.includes('客戶'));
+              const catIdx = h.findIndex(c => c === '類別' || c.includes('類別') || c === '科目');
+              const summaryIdx = h.findIndex(c => c === '摘要');
+              const remarkIdx = h.findIndex(c => c === '備註');
+
+              const cust = custIdx !== -1 ? item.row[custIdx] : '';
+              const catCol = catIdx !== -1 ? item.row[catIdx] : '';
+              const summary = summaryIdx !== -1 ? item.row[summaryIdx] : '';
+              const remark = remarkIdx !== -1 ? item.row[remarkIdx] : '';
+
+              const category = identifyCategory(cust, catCol, summary, remark);
+              const tool = identifySaasTool(cust, catCol, summary, remark);
+              const person = category === '員工薪資人事' ? identifyPerson(cust, catCol, summary, remark) : '-';
+              const parsedAmt = parseStrictAmount(item.row, item.headers);
+              const month = parseMonth(item.row, item.headers);
+              const year = month !== '其他' ? month.split('-')[0] : '其他';
+
+              return {
+                ...item,
+                _detectedCategory: category,
+                _detectedTool: tool,
+                _detectedPerson: person,
+                _amount: parsedAmt,
+                _year: year,
+                _month: month,
+                _rawText: `${cust} ${catCol} ${summary} ${remark} ${tool} ${person} ${item.row.join(' ')}`.toLowerCase()
+              };
+            })
+            .filter(item => 
+              item._detectedCategory !== '非營運支出(已排除)' && 
+              item._amount > 0
+            );
+        });
+
+        const totalCombinedCount = computed(() => allProcessedRows.value.length);
+
+        const availableYears = computed(() => {
+          const yrs = new Set();
+          allProcessedRows.value.forEach(r => {
+            if (r._year && r._year !== '其他') yrs.add(r._year);
+          });
+          return Array.from(yrs).sort();
+        });
+
+        const availableMonths = computed(() => {
+          const months = new Set();
+          allProcessedRows.value.forEach(r => {
+            if (r._month && r._month !== '其他') {
+              if (selectedYear.value === 'ALL' || r._year === selectedYear.value) {
+                months.add(r._month);
+              }
+            }
+          });
+          return Array.from(months).sort();
+        });
+
+        const timeFilteredRows = computed(() => {
+          return allProcessedRows.value.filter(item => {
+            if (selectedYear.value !== 'ALL' && item._year !== selectedYear.value) return false;
+            return true;
+          });
+        });
+
+        const fixedBottomSalaryKeys = ['法定勞保/勞退', '法定健保費', '薪資扣繳稅款'];
+
+        const sortedSalaryList = computed(() => {
+          const list = Object.entries(salaryStats.value)
+            .filter(([name]) => !fixedBottomSalaryKeys.includes(name))
+            .map(([name, amount]) => ({ name, amount }));
+          return list.sort((a, b) => {
+            return salarySortOrder.value === 'desc' ? b.amount - a.amount : a.amount - b.amount;
+          });
+        });
+
+        const fixedBottomSalaryList = computed(() => {
+          return fixedBottomSalaryKeys
+            .map(name => ({ name, amount: salaryStats.value[name] || 0 }))
+            .filter(item => item.amount > 0);
+        });
+
+        const sortedSaasList = computed(() => {
+          const list = Object.entries(saasStats.value).map(([name, amount]) => ({ name, amount }));
+          return list.sort((a, b) => {
+            return saasSortOrder.value === 'desc' ? b.amount - a.amount : a.amount - b.amount;
+          });
+        });
+
+        const activeCategoryLabel = computed(() => {
+          if (filterCategory.value === '薪資') {
+            return selectedSalaryPerson.value !== 'ALL' ? `薪資: ${selectedSalaryPerson.value}` : '全體同仁薪資人事分析';
+          }
+          if (filterCategory.value === 'AI') {
+            return selectedSaasTool.value !== 'ALL' ? `AI: ${selectedSaasTool.value}` : 'AI / SaaS 全工具分析';
+          }
+          const map = {
+            'ALL': '全部分類',
+            '租金': '租金與水電網絡',
+            '勞務': '外包勞務費 (HR/會計)',
+            '福利': '職工福利 / 聚餐',
+            '稅項': '政府稅項 (營業稅)',
+            '硬體': '硬體設備 / 用具',
+            '差旅': '差旅 / 交通 (Sheet 3)',
+            '其他': '其他雜項支出'
+          };
+          return map[filterCategory.value] || '自訂篩選';
+        });
+
+        const getToolColor = (tool) => {
+          const map = {
+            'Foxit PDF Editor': '#0ea5e9',
+            '104 系統/招聘': '#f59e0b',
+            'Figma': '#a855f7',
+            'Adobe CC': '#ef4444',
+            'OpenAI / ChatGPT': '#10b981',
+            'Cursor AI': '#06b6d4',
+            'Anthropic (Claude)': '#d97706',
+            'Microsoft 365': '#2563eb',
+            'Google Workspace': '#ea580c',
+            'Anomaly (Opencode)': '#6366f1',
+            'AI Cost (綜合)': '#8b5cf6'
+          };
+          return map[tool] || '#94a3b8';
+        };
+
+        const setCategory = (cat) => {
+          filterCategory.value = cat;
+          selectedSaasTool.value = 'ALL';
+          selectedSalaryPerson.value = 'ALL';
+        };
+
+        const processData = () => {
+          const list = timeFilteredRows.value;
+          const catMap = {
+            '員工薪資人事': 0,
+            '租金與水電': 0,
+            '外包勞務費': 0,
+            'AI / SaaS': 0,
+            '職工福利': 0,
+            '政府稅項': 0,
+            '硬體設備': 0,
+            '差旅交通': 0,
+            '其他雜項': 0
+          };
+          
+          const saasMap = {};
+          const personMap = {};
+          const timelineMap = {};
+
+          list.forEach(item => {
+            const amt = item._amount;
+            if (catMap[item._detectedCategory] !== undefined) {
+              catMap[item._detectedCategory] += amt;
+            } else {
+              catMap['其他雜項'] += amt;
+            }
+
+            if (item._detectedCategory === 'AI / SaaS' && item._detectedTool !== '-') {
+              saasMap[item._detectedTool] = (saasMap[item._detectedTool] || 0) + amt;
+            }
+
+            if (item._detectedCategory === '員工薪資人事' && item._detectedPerson !== '-') {
+              personMap[item._detectedPerson] = (personMap[item._detectedPerson] || 0) + amt;
+            }
+
+            let isMatch = false;
+            if (filterCategory.value === 'ALL') {
+              isMatch = true;
+            } else if (filterCategory.value === '薪資') {
+              if (selectedSalaryPerson.value === 'ALL') isMatch = (item._detectedCategory === '員工薪資人事');
+              else isMatch = (item._detectedCategory === '員工薪資人事' && item._detectedPerson === selectedSalaryPerson.value);
+            } else if (filterCategory.value === 'AI') {
+              if (selectedSaasTool.value === 'ALL') isMatch = (item._detectedCategory === 'AI / SaaS');
+              else isMatch = (item._detectedCategory === 'AI / SaaS' && item._detectedTool === selectedSaasTool.value);
+            } else if (filterCategory.value === '租金') isMatch = (item._detectedCategory === '租金與水電');
+            else if (filterCategory.value === '勞務') isMatch = (item._detectedCategory === '外包勞務費');
+            else if (filterCategory.value === '福利') isMatch = (item._detectedCategory === '職工福利');
+            else if (filterCategory.value === '稅項') isMatch = (item._detectedCategory === '政府稅項');
+            else if (filterCategory.value === '硬體') isMatch = (item._detectedCategory === '硬體設備');
+            else if (filterCategory.value === '差旅') isMatch = (item._detectedCategory === '差旅交通');
+            else if (filterCategory.value === '其他') isMatch = (item._detectedCategory === '其他雜項');
+
+            if (isMatch && item._month && item._month !== '其他') {
+              timelineMap[item._month] = (timelineMap[item._month] || 0) + amt;
+            }
+          });
+
+          const calculatedTotal = Object.values(catMap).reduce((acc, v) => acc + v, 0);
+
+          stats.value = { 
+            total: calculatedTotal, 
+            categories: catMap 
+          };
+          saasStats.value = saasMap;
+          salaryStats.value = personMap;
+
+          nextTick(() => {
+            renderCharts(catMap, timelineMap, saasMap, personMap);
+          });
+        };
+
+        const renderCharts = (catMap, timelineMap, saasMap, personMap) => {
+          const ctxCat = document.getElementById('categoryChart')?.getContext('2d');
+          if (ctxCat) {
+            if (categoryChartInstance) categoryChartInstance.destroy();
+            
+            const isAIView = (filterCategory.value === 'AI');
+            const isSalaryView = (filterCategory.value === '薪資');
+            
+            let labels = [];
+            let dataValues = [];
+            let bgColors = [];
+
+            if (isSalaryView) {
+              const combinedSalaryItems = [...sortedSalaryList.value, ...fixedBottomSalaryList.value];
+              labels = combinedSalaryItems.map(i => i.name);
+              dataValues = combinedSalaryItems.map(i => i.amount);
+              const defaultRosePalette = ['#e11d48', '#f43f5e', '#fb7185', '#fda4af', '#be123c', '#9f1239', '#881337', '#fecdd3', '#e2e8f0', '#f59e0b', '#d97706'];
+              bgColors = labels.map((p, idx) => {
+                if (selectedSalaryPerson.value === 'ALL' || selectedSalaryPerson.value === p) {
+                  return defaultRosePalette[idx % defaultRosePalette.length];
+                }
+                return '#e2e8f0';
+              });
+            } else if (isAIView) {
+              labels = sortedSaasList.value.map(i => i.name);
+              dataValues = sortedSaasList.value.map(i => i.amount);
+              bgColors = labels.map(l => (selectedSaasTool.value === 'ALL' || selectedSaasTool.value === l) ? getToolColor(l) : '#e2e8f0');
+            } else {
+              labels = Object.keys(catMap);
+              dataValues = Object.values(catMap);
+              const defaultColors = ['#f43f5e', '#f59e0b', '#06b6d4', '#8b5cf6', '#10b981', '#14b8a6', '#3b82f6', '#6366f1', '#94a3b8'];
+              bgColors = labels.map((lbl, idx) => {
+                if (filterCategory.value === 'ALL') return defaultColors[idx];
+                const match = (filterCategory.value === '薪資' && lbl === '員工薪資人事') ||
+                            (filterCategory.value === '租金' && lbl === '租金與水電') ||
+                            (filterCategory.value === '勞務' && lbl === '外包勞務費') ||
+                            (filterCategory.value === 'AI' && lbl === 'AI / SaaS') ||
+                            (filterCategory.value === '福利' && lbl === '職工福利') ||
+                            (filterCategory.value === '稅項' && lbl === '政府稅項') ||
+                            (filterCategory.value === '硬體' && lbl === '硬體設備') ||
+                            (filterCategory.value === '差旅' && lbl === '差旅交通') ||
+                            (filterCategory.value === '其他' && lbl === '其他雜項');
+                return match ? defaultColors[idx] : '#e2e8f0';
+              });
+            }
+
+            categoryChartInstance = new Chart(ctxCat, {
+              type: 'doughnut',
+              data: {
+                labels: labels,
+                datasets: [{ data: dataValues, backgroundColor: bgColors }]
+              },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                onClick: (event, elements) => {
+                  if (elements && elements.length > 0) {
+                    const index = elements[0].index;
+                    const clickedLabel = labels[index];
+                    
+                    if (isSalaryView) {
+                      selectedSalaryPerson.value = (selectedSalaryPerson.value === clickedLabel) ? 'ALL' : clickedLabel;
+                    } else if (isAIView) {
+                      selectedSaasTool.value = (selectedSaasTool.value === clickedLabel) ? 'ALL' : clickedLabel;
+                    } else {
+                      const catReverseMap = {
+                        '員工薪資人事': '薪資',
+                        '租金與水電': '租金',
+                        '外包勞務費': '勞務',
+                        'AI / SaaS': 'AI',
+                        '職工福利': '福利',
+                        '政府稅項': '稅項',
+                        '硬體設備': '硬體',
+                        '差旅交通': '差旅',
+                        '其他雜項': '其他'
+                      };
+                      const targetCat = catReverseMap[clickedLabel] || 'ALL';
+                      filterCategory.value = (filterCategory.value === targetCat) ? 'ALL' : targetCat;
+                      selectedSaasTool.value = 'ALL';
+                      selectedSalaryPerson.value = 'ALL';
+                    }
+                  }
+                },
+                plugins: {
+                  legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } }
+                }
+              }
+            });
+          }
+
+          const ctxTime = document.getElementById('timelineChart')?.getContext('2d');
+          if (ctxTime) {
+            if (timelineChartInstance) timelineChartInstance.destroy();
+            const sortedMonths = Object.keys(timelineMap).sort();
+            
+            const barBgColors = sortedMonths.map(m => {
+              if (selectedMonth.value === 'ALL' || selectedMonth.value === m) {
+                if (filterCategory.value === '薪資') return '#f43f5e';
+                if (filterCategory.value === 'AI') return '#8b5cf6';
+                if (filterCategory.value === '差旅') return '#6366f1';
+                if (filterCategory.value === '勞務') return '#06b6d4';
+                if (filterCategory.value === '稅項') return '#14b8a6';
+                if (filterCategory.value === '硬體') return '#3b82f6';
+                return '#10b981';
+              }
+              return '#cbd5e1';
+            });
+
+            timelineChartInstance = new Chart(ctxTime, {
+              type: 'bar',
+              data: {
+                labels: sortedMonths,
+                datasets: [{
+                  label: `${activeCategoryLabel.value} (NT$)`,
+                  data: sortedMonths.map(m => timelineMap[m]),
+                  backgroundColor: barBgColors,
+                  borderRadius: 4
+                }]
+              },
+              options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                onClick: (event, elements) => {
+                  if (elements && elements.length > 0) {
+                    const index = elements[0].index;
+                    const clickedMonth = sortedMonths[index];
+                    selectedMonth.value = (selectedMonth.value === clickedMonth) ? 'ALL' : clickedMonth;
+                  }
+                },
+                scales: {
+                  y: { ticks: { callback: v => '$' + v.toLocaleString() } }
+                }
+              }
+            });
+          }
+        };
+
+        watch([selectedYear, selectedMonth, filterCategory, selectedSaasTool, selectedSalaryPerson, salarySortOrder, saasSortOrder], () => {
+          processData();
+        });
+
+        const filteredRows = computed(() => {
+          let list = allProcessedRows.value;
+          
+          if (selectedYear.value !== 'ALL') {
+            list = list.filter(item => item._year === selectedYear.value);
+          }
+
+          if (selectedMonth.value !== 'ALL') {
+            list = list.filter(item => item._month === selectedMonth.value);
+          }
+
+          if (filterCategory.value !== 'ALL') {
+            list = list.filter(item => {
+              if (filterCategory.value === '薪資') {
+                if (item._detectedCategory !== '員工薪資人事') return false;
+                if (selectedSalaryPerson.value !== 'ALL') return item._detectedPerson === selectedSalaryPerson.value;
+                return true;
+              }
+              if (filterCategory.value === '租金') return item._detectedCategory === '租金與水電';
+              if (filterCategory.value === '勞務') return item._detectedCategory === '外包勞務費';
+              if (filterCategory.value === 'AI') {
+                if (item._detectedCategory !== 'AI / SaaS') return false;
+                if (selectedSaasTool.value !== 'ALL') return item._detectedTool === selectedSaasTool.value;
+                return true;
+              }
+              if (filterCategory.value === '福利') return item._detectedCategory === '職工福利';
+              if (filterCategory.value === '稅項') return item._detectedCategory === '政府稅項';
+              if (filterCategory.value === '硬體') return item._detectedCategory === '硬體設備';
+              if (filterCategory.value === '差旅') return item._detectedCategory === '差旅交通';
+              if (filterCategory.value === '其他') return item._detectedCategory === '其他雜項';
+              return true;
+            });
+          }
+
+          if (!searchQuery.value) return list;
+          const q = searchQuery.value.toLowerCase().trim();
+          return list.filter(item => item._rawText.includes(q));
+        });
+
+        const switchTab = (key) => {
+          activeSheetKey.value = key;
+          filterCategory.value = 'ALL';
+          selectedSaasTool.value = 'ALL';
+          selectedSalaryPerson.value = 'ALL';
+          selectedMonth.value = 'ALL';
+          searchQuery.value = '';
+          processData();
+        };
+
+        const formatCell = (val) => {
+          if (val === null || val === undefined || val === '') return '-';
+          if (typeof val === 'string' && val.includes('T') && val.endsWith('Z')) {
+            const d = new Date(val);
+            if (!isNaN(d.getTime())) return d.toLocaleDateString();
+          }
+          return val;
+        };
+
+        const fetchData = async () => {
+          if (!isUnlocked.value) return; // 未解鎖不呼叫 API
+          loading.value = true;
+          try {
+            const res = await fetch(apiUrl, { method: 'GET', redirect: 'follow' });
+            const data = await res.json();
+            sheetsData.value = data;
+            lastUpdated.value = new Date().toLocaleTimeString();
+            processData();
+          } catch (err) {
+            console.error('Fetch Error:', err);
+          } finally {
+            loading.value = false;
+          }
+        };
+
+        onMounted(() => {
+          if (isUnlocked.value) {
+            fetchData();
+          }
+        });
+
+        return {
+          isUnlocked,
+          inputPassword,
+          passwordError,
+          verifyPassword,
+          sheetsData,
+          activeSheetKey,
+          activeHeaders,
+          totalCombinedCount,
+          filteredRows,
+          timeFilteredRows,
+          availableYears,
+          availableMonths,
+          selectedYear,
+          selectedMonth,
+          kpiCardsList,
+          rotateCards,
+          stats,
+          saasStats,
+          salaryStats,
+          sortedSalaryList,
+          fixedBottomSalaryList,
+          sortedSaasList,
+          salarySortOrder,
+          saasSortOrder,
+          selectedSaasTool,
+          selectedSalaryPerson,
+          loading,
+          searchQuery,
+          filterCategory,
+          activeCategoryLabel,
+          lastUpdated,
+          fetchData,
+          switchTab,
+          setCategory,
+          getToolColor,
+          processData,
+          formatCell
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
